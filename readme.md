@@ -9,7 +9,6 @@ A Python toolkit for working with Orbbec Gemini 2 depth cameras. This toolkit pr
 - Hardware-aligned RGB and depth streams
 - Depth data post-processing with configurable filters
 - Real-time visualization utilities
-- Thread-safe frame buffer management
 
 ## Requirements
 

@@ -1,18 +1,3 @@
-# ******************************************************************************
-#  Copyright (c) 2024 Orbbec 3D Technology, Inc
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#
-#      http:# www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
-# ******************************************************************************
 from typing import Any, Optional, Union
 
 import cv2
@@ -123,3 +108,108 @@ def frame_to_bgr_image(frame: VideoFrame) -> Union[Optional[np.array], Any]:
         print("Unsupported color format: {}".format(color_format))
         return None
     return image
+
+
+def calculate_FoV(Z):
+    def _h_fov(Z):
+        """
+        Calculate the field of view (FOV) based on the given parameters.
+
+        Parameters:
+        Z (float): The distance from the camera to the object.
+
+        Returns:
+        float: The calculated field of view.
+        """
+        cx = 636.404663
+        fx = 613.787292
+        B = 0.05
+        width = 1280
+
+        # Calculate the field of view using the provided formula
+        # Note: The formula is derived from the pinhole camera model
+        # and assumes a rectangular image sensor.
+
+        # Ensure Z is not zero to avoid division by zero
+        if Z == 0:
+            raise ValueError("Z must be non-zero to calculate FOV.")
+
+        # Calculate FOV
+        # The formula is derived from the pinhole camera model
+        # and assumes a rectangular image sensor.
+        fov = np.arctan(cx / fx - B / Z) + np.arctan((width - 1 - cx) / fx)
+        active_fov = np.arctan(cx / fx) + np.arctan((width - 1 - cx) / fx)
+
+        # Convert radians to degrees
+        return fov * 180 / np.pi, active_fov * 180 / np.pi
+
+    def _v_fov(Z):
+        """
+        Calculate the vertical field of view (FOV) based on the given parameters.
+
+        Parameters:
+        Z (float): The distance from the camera to the object.
+
+        Returns:
+        float: The calculated vertical field of view.
+        """
+        cy = 396.343628
+        fy = 613.787292
+        B = 0.05
+        height = 800
+
+        # Ensure Z is not zero to avoid division by zero
+        if Z == 0:
+            raise ValueError("Z must be non-zero to calculate FOV.")
+
+        # Calculate FOV
+        fov = np.arctan(cy / fy - B / Z) + np.arctan((height - 1 - cy) / fy)
+        active_fov = np.arctan(cy / fy) + np.arctan((height - 1 - cy) / fy)
+
+        # Convert radians to degrees
+        return fov * 180 / np.pi, active_fov * 180 / np.pi
+
+    hfov = _h_fov(Z)
+    vfov = _v_fov(Z)
+    print(f"Horizontal FoV at {Z}m: {hfov[0]}, Max: {hfov[1]}")
+    print(f"Vertical FoV at {Z}m: {vfov[0]}, Max: {vfov[1]}")
+
+
+def check_intrinsics():
+    """
+    Check the intrinsic and extrinsic parameters of the camera.
+
+    This function retrieves the intrinsic and extrinsic parameters of the camera
+    and prints them to the console.
+    """
+    from pyorbbecsdk import OBSensorType, Pipeline
+
+    pipeline = Pipeline()
+    profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
+
+    # Get color_profile
+    color_profile = profile_list.get_default_video_stream_profile()
+    profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
+
+    # Get depth_profile
+    depth_profile = profile_list.get_default_video_stream_profile()
+
+    # Get external parameters
+    extrinsic = depth_profile.get_extrinsic_to(color_profile)
+    print("extrinsic  {}".format(extrinsic))
+
+    # Get depth inernal parameters
+    depth_intrinsics = depth_profile.get_intrinsic()
+    print("depth_intrinsics  {}".format(depth_intrinsics))
+
+    # Get depth distortion parameter
+    depth_distortion = depth_profile.get_distortion()
+    print("depth_distortion  {}".format(depth_distortion))
+
+    # Get color internala parameters
+    color_intrinsics = color_profile.get_intrinsic()
+    print("color_intrinsics  {}".format(color_intrinsics))
+
+    # Get color distortion parameter
+    color_distortion = color_profile.get_distortion()
+    print("color_distortion  {}".format(color_distortion))

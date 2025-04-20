@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -34,6 +35,24 @@ class Gemini2:
         self.is_running = False
         self.acquisition_thread = None
         self.lock = threading.Lock()
+
+        # Visualization thread attributes
+        self.vis_queue = queue.Queue(maxsize=2)  # Small queue for viz frames
+        self.vis_thread = None
+        self.vis_running = False
+
+    def is_connected(self):
+        """
+        Check if a camera is connected and initialized properly
+
+        Returns:
+            bool: True if camera is connected and initialized
+        """
+        return (
+            self.device is not None
+            and self.pipeline is not None
+            and self.color_stream_profile is not None
+        )
 
     def start_pipeline(self):
         """
@@ -146,101 +165,44 @@ class Gemini2:
 
         return depth_frame
 
-    def start_acquisition_thread(self):
-        """
-        Start the frame acquisition thread.
-        """
-        if self.acquisition_thread is not None and self.acquisition_thread.is_alive():
-            return
-
-        self.is_running = True
-        self.acquisition_thread = threading.Thread(target=self._acquisition_loop)
-        self.acquisition_thread.daemon = True
-        self.acquisition_thread.start()
-
-    def stop_acquisition_thread(self):
-        """
-        Stop the frame acquisition thread.
-        """
-        self.is_running = False
-        if self.acquisition_thread is not None:
-            self.acquisition_thread.join(timeout=1.0)
-            self.acquisition_thread = None
-
-        # Clear the frame buffer
-        while not self.frame_buffer.empty():
-            try:
-                self.frame_buffer.get_nowait()
-            except queue.Empty:
-                break
-
-    def _acquisition_loop(self):
-        """
-        Main acquisition loop that runs in a separate thread.
-        """
-        while self.is_running:
-            try:
-                frame_data = self.get_one_frame_data()
-                if frame_data is not None:
-                    # If buffer is full, remove oldest frame
-                    if self.frame_buffer.full():
-                        try:
-                            self.frame_buffer.get_nowait()
-                        except queue.Empty:
-                            pass
-                    # Add new frame to buffer
-                    self.frame_buffer.put(frame_data, block=False)
-            except Exception as e:
-                print(f"Error in acquisition thread: {e}")
-                time.sleep(0.01)  # Prevent tight loop if errors occur
-
-    def get_latest_frame(self):
-        """
-        Get the most recent frame from the buffer.
-        """
-        if self.frame_buffer.empty():
-            return None
-
-        # Get the most recent frame
-        with self.lock:
-            # Empty the queue except for the last item
-            latest_frame = None
-            while not self.frame_buffer.empty():
-                try:
-                    latest_frame = self.frame_buffer.get_nowait()
-                except queue.Empty:
-                    break
-
-            return latest_frame
-
     def init_camera(self):
         """
         Initialize the camera.
         :return: None
         """
-        # Set the depth work mode
-        # Unbinned Dense Default
-        self.set_depth_work_mode(0)
+        if not self.is_connected():
+            print("Cannot initialize: No camera connected")
+            return False
 
-        # Set the depth stream
-        # <VideoStreamProfile: 1280x800@30> OBFormat.Y16
-        self.set_depth_stream_profile(2)
+        try:
+            # Set the depth work mode
+            # Unbinned Dense Default
+            self.set_depth_work_mode(0)
 
-        # Set the color stream
-        # <VideoStreamProfile: 1920x1080@30> OBFormat.RGB success!
-        self.set_color_stream_profile(1)
+            # Set the depth stream
+            # <VideoStreamProfile: 1280x800@30> OBFormat.Y16
+            self.set_depth_stream_profile(2)
 
-        # Set the alignment mode to hardware alignment
-        self.config.set_align_mode(OBAlignMode.HW_MODE)
-        print("Set align mode to HW_MODE success!")
+            # Set the color stream
+            # <VideoStreamProfile: 1920x1080@30> OBFormat.RGB success!
+            self.set_color_stream_profile(1)
 
-        # Get post depth filter setting
-        self.get_depth_post_filter()
+            # Set the alignment mode to hardware alignment
+            self.config.set_align_mode(OBAlignMode.HW_MODE)
+            print("Set align mode to HW_MODE success!")
 
-        self.pipeline.start(self.config)
+            # Get post depth filter setting
+            self.get_depth_post_filter()
 
-        # Start the frame acquisition thread
-        self.start_acquisition_thread()
+            self.pipeline.start(self.config)
+
+            # Start the frame acquisition thread
+            self.start_acquisition_thread()
+            return True
+
+        except Exception as e:
+            print(f"Error initializing camera: {e}")
+            return False
 
     def get_one_frame_data(self):
         """
@@ -278,26 +240,213 @@ class Gemini2:
         except Exception as e:
             print(f"Error: {e}")
 
-    def visualise_frame(self, color_image, depth_data):
-        depth_image = cv2.normalize(
-            depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
-        )
-        depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
-        cv2.imshow("Color Viewer", color_image)
-        cv2.imshow("Depth Viewer", depth_image)
-        cv2.waitKey(1)
+    def start_acquisition_thread(self):
+        """
+        Start the frame acquisition thread.
+        """
+        if self.acquisition_thread is not None and self.acquisition_thread.is_alive():
+            return
 
-    def __del__(self):
+        self.is_running = True
+        self.acquisition_thread = threading.Thread(target=self._acquisition_loop)
+        self.acquisition_thread.daemon = True
+        self.acquisition_thread.start()
+
+    def stop_acquisition_thread(self):
         """
-        Clean up resources when the object is destroyed.
+        Stop the frame acquisition thread.
         """
-        self.stop_acquisition_thread()
-        self.stop_pipeline()
+        self.is_running = False
+        if self.acquisition_thread is not None:
+            self.acquisition_thread.join(timeout=1.0)
+            self.acquisition_thread = None
+
+        # Clear the frame buffer
+        while not self.frame_buffer.empty():
+            try:
+                self.frame_buffer.get_nowait()
+            except queue.Empty:
+                break
+
+    def _acquisition_loop(self):
+        """
+        Main acquisition loop that runs in a separate thread.
+        """
+        while self.is_running:
+            try:
+                frame_data = self.get_one_frame_data()
+                if frame_data is not None:
+                    if self.frame_buffer.full():
+                        try:
+                            self.frame_buffer.get_nowait()  # Remove oldest
+                        except queue.Empty:
+                            pass
+                    try:
+                        self.frame_buffer.put(frame_data, block=False)
+                    except queue.Full:
+                        pass  # Skip frame if buffer still full
+            except Exception as e:
+                print(f"Error in acquisition thread: {e}")
+                time.sleep(0.1)  # Back off on errors
+
+    def get_latest_frame(self):
+        """
+        Get the most recent frame from the buffer, dropping old frames if needed.
+        """
+        if self.frame_buffer.empty():
+            return None
+
+        # Skip all but the newest frame if we're falling behind
+        with self.lock:
+            frames_to_skip = self.frame_buffer.qsize() - 1
+            for _ in range(frames_to_skip):
+                try:
+                    self.frame_buffer.get_nowait()
+                except queue.Empty:
+                    break
+
+            try:
+                return self.frame_buffer.get_nowait()
+            except queue.Empty:
+                return None
+
+    def get_status(self):
+        """
+        Get the current status of the camera system.
+
+        Returns:
+            dict: Status information including:
+                - frame_buffer_usage: Current buffer utilization (0.0-1.0)
+                - acquisition_active: Whether acquisition thread is running
+                - pipeline_active: Whether pipeline is running
+        """
+        buffer_size = self.frame_buffer.qsize()
+        buffer_capacity = self.frame_buffer.maxsize
+
+        return {
+            "frame_buffer_usage": buffer_size / buffer_capacity
+            if buffer_capacity > 0
+            else 0,
+            "acquisition_active": self.acquisition_thread is not None
+            and self.acquisition_thread.is_alive(),
+            "pipeline_active": self.pipeline.is_started(),
+        }
+
+    def start_visualization_thread(self):
+        """
+        Start the visualization thread.
+        """
+        if self.vis_thread is not None and self.vis_thread.is_alive():
+            return
+
+        self.vis_running = True
+        self.vis_thread = threading.Thread(target=self._visualization_loop)
+        self.vis_thread.daemon = True
+        self.vis_thread.start()
+
+    def stop_visualization_thread(self):
+        """
+        Stop the visualization thread.
+        """
+        self.vis_running = False
+        if self.vis_thread is not None:
+            self.vis_thread.join(timeout=1.0)
+            self.vis_thread = None
+
+        # Clear the visualization queue
+        while not self.vis_queue.empty():
+            try:
+                self.vis_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _visualization_loop(self):
+        """
+        Main visualization loop that runs in a separate thread.
+        """
+        while self.vis_running:
+            try:
+                # Block with timeout to allow thread to check if it should exit
+                frame_data = self.vis_queue.get(timeout=0.1)
+
+                color_image = frame_data["color_image"]
+                depth_data = frame_data["depth_data"]
+                kwargs = frame_data["kwargs"]
+
+                # Process masks if present
+                if "masks" in kwargs:
+                    masks = kwargs["masks"]
+                    for mask in masks:
+                        mask = mask.cpu().numpy()
+                        # CHW to HWC
+                        mask = np.transpose(mask, (1, 2, 0))
+                        # Repeat the mask HWC=1 to HWC=3
+                        mask = np.repeat(mask, 3, axis=2)
+                        mask = np.where(mask > 0.0, 1.0, 0.0).astype(np.uint8)
+                        color_image[mask == 1] = 255
+
+                # Process points if present
+                if "points" in kwargs:
+                    points = kwargs["points"]
+                    for point in points:
+                        cv2.circle(
+                            color_image, tuple(point.astype(int)), 5, (0, 255, 0), -1
+                        )
+
+                # Create visualization for depth data
+                depth_image = cv2.normalize(
+                    depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
+                )
+                depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
+
+                # Display images
+                cv2.imshow("Color Viewer", color_image)
+                cv2.imshow("Depth Viewer", depth_image)
+                cv2.waitKey(1)
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Error in visualization thread: {e}")
+                time.sleep(0.1)  # Back off on errors
+
+    def visualise_frame(self, color_image, depth_data, **kwargs):
+        """
+        Queue frames for visualization in a separate thread.
+
+        :param color_image: The color image to visualize.
+        :param depth_data: The depth data to visualize.
+        :param kwargs: Additional keyword arguments.
+        """
+        # Make copies to avoid modification of original data
+        color_copy = color_image.copy()
+        depth_copy = depth_data.copy()
+
+        # If visualization thread is not running, start it
+        if self.vis_thread is None or not self.vis_thread.is_alive():
+            self.start_visualization_thread()
+
+        # If queue is full, remove oldest frame
+        if self.vis_queue.full():
+            try:
+                self.vis_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+        # Add the frame to the queue
+        try:
+            frame_data = {
+                "color_image": color_copy,
+                "depth_data": depth_copy,
+                "kwargs": kwargs,
+            }
+            self.vis_queue.put(frame_data, block=False)
+        except queue.Full:
+            pass  # Skip frame if queue is full
 
 
 if __name__ == "__main__":
     # Test valid FPS
-    import time
 
     gemini2 = Gemini2()
     gemini2.init_camera()
@@ -306,17 +455,22 @@ if __name__ == "__main__":
 
     frames_processed = 0
     while True:
+        # It is important to sleep for a short time to avoid CPU overload
+        time.sleep(0.01)
         frame_data = gemini2.get_latest_frame()
-        if frame_data is not None:
-            gemini2.visualise_frame(frame_data["color_image"], frame_data["depth_data"])
-            frames_processed += 1
+        if frame_data is None:
+            continue
 
-            # Calculate FPS every 100 frames
-            if frames_processed % 100 == 0:
-                end_time = time.time()
-                elapsed = end_time - start_time
-                print(f"FPS: {100 / elapsed:.2f}")
-                start_time = time.time()
+        gemini2.visualise_frame(
+            frame_data["color_image"],
+            frame_data["depth_data"],
+            points=np.array([[250.0, 800.0]], dtype=np.float32),
+        )
+        frames_processed += 1
 
-        if cv2.waitKey(1) == 27:  # ESC key
-            break
+        # Calculate FPS every 100 frames
+        if frames_processed % 100 == 0:
+            end_time = time.time()
+            elapsed = end_time - start_time
+            print(f"FPS: {100 / elapsed:.2f}")
+            start_time = time.time()
